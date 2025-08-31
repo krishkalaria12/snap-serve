@@ -5,8 +5,10 @@ import (
 	"log"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/krishkalaria12/snap-serve/database"
 	"github.com/krishkalaria12/snap-serve/models"
+	"github.com/krishkalaria12/snap-serve/router"
 )
 
 func main() {
@@ -19,10 +21,7 @@ func main() {
 	}
 
 	app := fiber.New()
-
-	app.Get("/hello", func(c *fiber.Ctx) error {
-		return c.SendString("Hello, World!")
-	})
+	app.Use(cors.New())
 
 	// close the database connection
 	defer func() {
@@ -32,6 +31,6 @@ func main() {
 		}
 	}()
 
-	fmt.Println("Server is listening at the port 3000")
+	router.SetupRoutes(app)
 	log.Fatal(app.Listen(":3000"))
 }
