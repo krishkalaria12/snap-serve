@@ -92,7 +92,7 @@ func isEmail(identity string) bool {
 func getUserByEmail(email string) (*models.User, error) {
 	db := database.GetDB()
 	var user models.User
-	if err := db.Where("email = ?", email).First(&user).Error; err != nil {
+	if err := db.Where(&models.User{Email: email}).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -104,7 +104,7 @@ func getUserByEmail(email string) (*models.User, error) {
 func getUserByUsername(username string) (*models.User, error) {
 	db := database.GetDB()
 	var user models.User
-	if err := db.Where("username = ?", username).First(&user).Error; err != nil {
+	if err := db.Where(&models.User{Username: username}).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}

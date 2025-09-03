@@ -13,6 +13,12 @@ func hashPassword(password string) (string, error) {
 }
 
 func GetUser(c *fiber.Ctx) error {
+	type UserResponse struct {
+		Email    string `json:"email"`
+		Username string `json:"username"`
+		FullName string `json:"name"`
+	}
+
 	id := c.Params("id")
 
 	db := database.GetDB()
@@ -23,7 +29,13 @@ func GetUser(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"status": "error", "message": "No user found with ID", "data": nil})
 	}
 
-	return c.JSON(fiber.Map{"status": "success", "message": "User found", "data": user})
+	userResponse := UserResponse{
+		Email:    user.Email,
+		Username: user.Username,
+		FullName: user.FullName,
+	}
+
+	return c.JSON(fiber.Map{"status": "success", "message": "User found", "data": userResponse})
 }
 
 func CreateUser(c *fiber.Ctx) error {
