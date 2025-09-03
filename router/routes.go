@@ -4,6 +4,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	handler "github.com/krishkalaria12/snap-serve/handlers"
+	"github.com/krishkalaria12/snap-serve/middleware"
 )
 
 func SetupRoutes(app *fiber.App) {
@@ -18,4 +19,6 @@ func SetupRoutes(app *fiber.App) {
 	user := api.Group("/user")
 	user.Get("/:id", handler.GetUser)
 	user.Post("/", handler.CreateUser)
+	user.Put("/:id", middleware.AuthMiddleware(), handler.UpdateUser)
+	user.Delete("/:id", middleware.AuthMiddleware(), handler.DeleteUser)
 }
