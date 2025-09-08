@@ -16,7 +16,7 @@ func main() {
 	_ = database.GetDB()
 
 	// Run migrations
-	err := database.MigrateModels(&models.User{})
+	err := database.MigrateModels(&models.User{}, &models.Image{})
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -26,6 +26,11 @@ func main() {
 
 	// Initialize auth service
 	handler.SetupAuthService()
+
+	if err := handler.MakeBucketPublic(); err != nil {
+		log.Printf("Warning: Failed to make bucket public: %v", err)
+		// Don't fatal here, app can still work with signed URLs
+	}
 
 	// close the database connection
 	defer func() {

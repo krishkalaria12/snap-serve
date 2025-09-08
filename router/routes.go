@@ -21,4 +21,7 @@ func SetupRoutes(app *fiber.App) {
 	user.Post("/", handler.CreateUser)
 	user.Put("/:id", middleware.AuthMiddleware(), handler.UpdateUser)
 	user.Delete("/:id", middleware.AuthMiddleware(), handler.DeleteUser)
+
+	image := api.Group("/image")
+	image.Post("/upload", middleware.AuthMiddleware(), handler.UploadImage)
 }

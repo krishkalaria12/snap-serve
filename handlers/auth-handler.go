@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/mail"
+	"strconv"
 	"time"
 
 	"github.com/go-pkgz/auth/v2"
@@ -173,11 +174,13 @@ func Login(c *fiber.Ctx) error {
 
 	// Create JWT token using go-pkgz/auth
 	user := token.User{
-		ID:    "user_" + string(rune(userModel.ID)), // Convert to string
+		ID:    strconv.FormatUint(uint64(userModel.ID), 10), // Convert to string
 		Name:  userModel.FullName,
 		Email: userModel.Email,
 		Attributes: map[string]interface{}{
+			"email":    userModel.Email,
 			"username": userModel.Username,
+			"user_id":  userModel.ID,
 		},
 	}
 

@@ -8,4 +8,6 @@ type User struct {
 	Email    string `gorm:"uniqueIndex;not null" json:"email"`
 	Password string `gorm:"not null" json:"password"`
 	FullName string `gorm:"not null" json:"name"`
+
+	Images []Image `json:"images,omitempty" gorm:"foreignKey:UserID"`
 }
