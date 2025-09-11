@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/disintegration/gift"
 	"github.com/gofiber/fiber/v2"
@@ -42,7 +43,7 @@ var supportedFilters = map[string]bool{
 }
 
 type ImageRequest struct {
-	ImageUrl string `json:"image_url"`
+	ImageUrl []string `json:"image_url"`
 }
 
 type FilterError struct {
@@ -293,8 +294,171 @@ func encodeImage(img image.Image) (*bytes.Reader, error) {
 	return bytes.NewReader(buf.Bytes()), nil
 }
 
+func routineLoadImages(images []string) []image.Image {
+	loadedImages := make(chan image.Image, len(images))
+	var wg sync.WaitGroup
+
+	for _, imageUrl := range images {
+		wg.Add(1)
+		go func(url string) {
+			defer wg.Done()
+			img, err := loadImage(url)
+			if err != nil {
+				loadedImages <- nil
+			} else {
+				loadedImages <- img
+			}
+		}(imageUrl)
+	}
+
+	go func() {
+		wg.Wait()
+		close(loadedImages)
+	}()
+
+	results := []image.Image{}
+	for img := range loadedImages {
+		if img != nil {
+			results = append(results, img)
+		}
+	}
+
+	return results
+}
+
+func routineProcessImages(images []image.Image, filters []gift.Filter) []image.Image {
+	processedImages := make(chan image.Image, len(images))
+	var wg sync.WaitGroup
+
+	for _, img := range images {
+		wg.Add(1)
+		go func(srcImg image.Image) {
+			defer wg.Done()
+			processedImg, err := processImage(srcImg, filters)
+			if err != nil {
+				processedImages <- nil
+			} else {
+				processedImages <- processedImg
+			}
+		}(img)
+	}
+
+	go func() {
+		wg.Wait()
+		close(processedImages)
+	}()
+
+	results := []image.Image{}
+	for img := range processedImages {
+		if img != nil {
+			results = append(results, img)
+		}
+	}
+
+	return results
+}
+
+func routineEncodeImages(images []image.Image) []*bytes.Reader {
+	encodedImages := make(chan *bytes.Reader, len(images))
+	var wg sync.WaitGroup
+
+	for _, img := range images {
+		wg.Add(1)
+		go func(srcImg image.Image) {
+			defer wg.Done()
+			reader, err := encodeImage(srcImg)
+			if err != nil {
+				encodedImages <- nil
+			} else {
+				encodedImages <- reader
+			}
+		}(img)
+	}
+
+	go func() {
+		wg.Wait()
+		close(encodedImages)
+	}()
+
+	results := []*bytes.Reader{}
+	for reader := range encodedImages {
+		if reader != nil {
+			results = append(results, reader)
+		}
+	}
+
+	return results
+}
+
+type UploadResult struct {
+	URL      string
+	Filename string
+	Error    error
+}
+
+func routineUploadImages(readers []*bytes.Reader, baseFilename string) []UploadResult {
+	uploadResults := make(chan UploadResult, len(readers))
+	var wg sync.WaitGroup
+
+	for i, reader := range readers {
+		wg.Add(1)
+		go func(r *bytes.Reader, index int) {
+			defer wg.Done()
+			filename := fmt.Sprintf("%s_%d.jpg", baseFilename, index)
+			url, uploadedFilename, err := uploader.UploadProcessedFile(r, filename)
+			uploadResults <- UploadResult{
+				URL:      url,
+				Filename: uploadedFilename,
+				Error:    err,
+			}
+		}(reader, i)
+	}
+
+	go func() {
+		wg.Wait()
+		close(uploadResults)
+	}()
+
+	results := []UploadResult{}
+	for result := range uploadResults {
+		results = append(results, result)
+	}
+
+	return results
+}
+
+func routineSaveImageRecords(uploadResults []UploadResult, userId uint) []error {
+	saveErrors := make(chan error, len(uploadResults))
+	var wg sync.WaitGroup
+
+	for _, result := range uploadResults {
+		if result.Error != nil {
+			continue
+		}
+		wg.Add(1)
+		go func(url, filename string) {
+			defer wg.Done()
+			err := uploadImageToDB(url, filename, userId)
+			saveErrors <- err
+		}(result.URL, result.Filename)
+	}
+
+	go func() {
+		wg.Wait()
+		close(saveErrors)
+	}()
+
+	var errors []error
+	for err := range saveErrors {
+		if err != nil {
+			errors = append(errors, err)
+		}
+	}
+
+	return errors
+}
+
 func ApplyFilterToImage(c *fiber.Ctx) error {
-	// Authenticate user
 	userId, err := middleware.CheckUserLoggedIn(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -304,7 +468,6 @@ func ApplyFilterToImage(c *fiber.Ctx) error {
 		})
 	}
 
-	// Parse request body
 	var imageData ImageRequest
 	if err := c.BodyParser(&imageData); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -314,7 +477,14 @@ func ApplyFilterToImage(c *fiber.Ctx) error {
 		})
 	}
 
-	if imageData.ImageUrl == "" {
+	cleanImageUrls := []string{}
+	for _, val := range imageData.ImageUrl {
+		if val != "" {
+			cleanImageUrls = append(cleanImageUrls, val)
+		}
+	}
+
+	if len(cleanImageUrls) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"status":  "error",
 			"message": "image_url is required",
@@ -322,17 +492,15 @@ func ApplyFilterToImage(c *fiber.Ctx) error {
 		})
 	}
 
-	// Load image from URL
-	img, err := loadImage(imageData.ImageUrl)
-	if err != nil {
+	loadImgs := routineLoadImages(cleanImageUrls)
+	if len(loadImgs) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"status":  "error",
-			"message": fmt.Sprintf("Failed to load image: %v", err),
+			"message": "Failed to load any images",
 			"data":    nil,
 		})
 	}
 
-	// Parse filters from query parameters
 	filters, err := parseFilters(c.Queries())
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -342,52 +510,60 @@ func ApplyFilterToImage(c *fiber.Ctx) error {
 		})
 	}
 
-	// Process image
-	processedImg, err := processImage(img, filters)
-	if err != nil {
+	processedImgs := routineProcessImages(loadImgs, filters)
+	if len(processedImgs) == 0 {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"status":  "error",
-			"message": "Failed to process image",
+			"message": "Failed to process any images",
 			"data":    nil,
 		})
 	}
 
-	// Encode processed image
-	reader, err := encodeImage(processedImg)
-	if err != nil {
+	encodedReaders := routineEncodeImages(processedImgs)
+	if len(encodedReaders) == 0 {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"status":  "error",
-			"message": "Failed to encode processed image",
+			"message": "Failed to encode any processed images",
 			"data":    nil,
 		})
 	}
 
-	// Upload processed image
-	processedFilename := "processed_image.jpg"
-	url, filename, err := uploader.UploadProcessedFile(reader, processedFilename)
-	if err != nil {
+	uploadResults := routineUploadImages(encodedReaders, "processed_image")
+	successfulUploads := []UploadResult{}
+	for _, result := range uploadResults {
+		if result.Error == nil {
+			successfulUploads = append(successfulUploads, result)
+		}
+	}
+
+	if len(successfulUploads) == 0 {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"status":  "error",
-			"message": "Failed to upload processed image",
+			"message": "Failed to upload any processed images",
 			"data":    nil,
 		})
 	}
 
-	// Save to database
-	if err := uploadImageToDB(url, filename, userId); err != nil {
+	saveErrors := routineSaveImageRecords(successfulUploads, userId)
+	if len(saveErrors) > 0 {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"status":  "error",
-			"message": "Failed to save image record",
+			"message": "Failed to save some image records",
 			"data":    nil,
 		})
+	}
+
+	responseData := make([]fiber.Map, len(successfulUploads))
+	for i, result := range successfulUploads {
+		responseData[i] = fiber.Map{
+			"url":      result.URL,
+			"filename": result.Filename,
+		}
 	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"status":  "success",
-		"message": "Successfully processed image",
-		"data": fiber.Map{
-			"url":      url,
-			"filename": filename,
-		},
+		"message": fmt.Sprintf("Successfully processed %d image(s)", len(successfulUploads)),
+		"data":    responseData,
 	})
 }
