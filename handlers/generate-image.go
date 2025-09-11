@@ -77,6 +77,7 @@ func GenerateImage(c *fiber.Ctx) error {
 		ctx,
 		"gemini-2.5-flash-image-preview",
 		genai.Text(enhancedPrompt),
+		&genai.GenerateContentConfig{},
 	)
 
 	if err != nil {
