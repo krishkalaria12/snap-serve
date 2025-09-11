@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"mime/multipart"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -28,6 +30,12 @@ type ClientUploader struct {
 	projectID  string
 	bucketName string
 	uploadPath string
+}
+
+type UploadResult struct {
+	URL      string
+	Filename string
+	Error    error
 }
 
 var uploader *ClientUploader
@@ -133,6 +141,83 @@ func UploadImage(c *fiber.Ctx) error {
 		"status":  "success",
 		"message": "Successfully uploaded the file",
 		"data":    url,
+	})
+}
+
+func UploadMultipleImages(c *fiber.Ctx) error {
+	userID, err := middleware.CheckUserLoggedIn(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"status":  "error",
+			"message": "Unauthorized Request",
+			"data":    nil,
+		})
+	}
+
+	form, err := c.MultipartForm()
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"status":  "error",
+			"message": "Error parsing multipart form",
+			"data":    nil,
+		})
+	}
+
+	files := form.File["images"]
+	if len(files) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"status":  "error",
+			"message": "No files provided",
+			"data":    nil,
+		})
+	}
+
+	uploadResults := routineUploadMultipleImages(files)
+	
+	successfulUploads := []UploadResult{}
+	var uploadErrors []string
+	
+	for _, result := range uploadResults {
+		if result.Error != nil {
+			uploadErrors = append(uploadErrors, fmt.Sprintf("Error uploading %s: %v", result.Filename, result.Error))
+		} else {
+			successfulUploads = append(successfulUploads, result)
+		}
+	}
+
+	if len(successfulUploads) > 0 {
+		dbErrors := routineSaveImageRecords(successfulUploads, userID)
+		if len(dbErrors) > 0 {
+			for _, dbErr := range dbErrors {
+				uploadErrors = append(uploadErrors, fmt.Sprintf("Database error: %v", dbErr))
+			}
+		}
+	}
+
+	urls := make([]string, 0, len(successfulUploads))
+	for _, result := range successfulUploads {
+		urls = append(urls, result.URL)
+	}
+
+	responseData := fiber.Map{
+		"uploaded_urls": urls,
+		"success_count": len(successfulUploads),
+		"total_count":   len(files),
+	}
+
+	if len(uploadErrors) > 0 {
+		responseData["errors"] = uploadErrors
+		return c.Status(fiber.StatusPartialContent).JSON(fiber.Map{
+			"status":  "partial_success",
+			"message": fmt.Sprintf("Uploaded %d out of %d files", len(successfulUploads), len(files)),
+			"data":    responseData,
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"status":  "success",
+		"message": fmt.Sprintf("Successfully uploaded %d files", len(successfulUploads)),
+		"data":    responseData,
 	})
 }
 
@@ -242,6 +327,110 @@ func (c *ClientUploader) MakeBucketPublic() error {
 	}
 
 	return nil
+}
+
+func routineUploadImages(readers []*bytes.Reader, baseFilename string) []UploadResult {
+	uploadResults := make(chan UploadResult, len(readers))
+	var wg sync.WaitGroup
+
+	for i, reader := range readers {
+		wg.Add(1)
+		go func(r *bytes.Reader, index int) {
+			defer wg.Done()
+			filename := fmt.Sprintf("%s_%d.jpg", baseFilename, index)
+			url, uploadedFilename, err := uploader.UploadProcessedFile(r, filename)
+			uploadResults <- UploadResult{
+				URL:      url,
+				Filename: uploadedFilename,
+				Error:    err,
+			}
+		}(reader, i)
+	}
+
+	go func() {
+		wg.Wait()
+		close(uploadResults)
+	}()
+
+	results := []UploadResult{}
+	for result := range uploadResults {
+		results = append(results, result)
+	}
+
+	return results
+}
+
+func routineUploadMultipleImages(files []*multipart.FileHeader) []UploadResult {
+	uploadResults := make(chan UploadResult, len(files))
+	var wg sync.WaitGroup
+
+	for _, fileHeader := range files {
+		wg.Add(1)
+		go func(fh *multipart.FileHeader) {
+			defer wg.Done()
+			
+			file, err := fh.Open()
+			if err != nil {
+				uploadResults <- UploadResult{
+					URL:      "",
+					Filename: fh.Filename,
+					Error:    fmt.Errorf("failed to open file %s: %v", fh.Filename, err),
+				}
+				return
+			}
+			defer file.Close()
+
+			url, uploadedFilename, err := uploader.UploadFile(file, fh.Filename)
+			uploadResults <- UploadResult{
+				URL:      url,
+				Filename: uploadedFilename,
+				Error:    err,
+			}
+		}(fileHeader)
+	}
+
+	go func() {
+		wg.Wait()
+		close(uploadResults)
+	}()
+
+	results := []UploadResult{}
+	for result := range uploadResults {
+		results = append(results, result)
+	}
+
+	return results
+}
+
+func routineSaveImageRecords(uploadResults []UploadResult, userId uint) []error {
+	saveErrors := make(chan error, len(uploadResults))
+	var wg sync.WaitGroup
+
+	for _, result := range uploadResults {
+		if result.Error != nil {
+			continue
+		}
+		wg.Add(1)
+		go func(url, filename string) {
+			defer wg.Done()
+			err := uploadImageToDB(url, filename, userId)
+			saveErrors <- err
+		}(result.URL, result.Filename)
+	}
+
+	go func() {
+		wg.Wait()
+		close(saveErrors)
+	}()
+
+	var errors []error
+	for err := range saveErrors {
+		if err != nil {
+			errors = append(errors, err)
+		}
+	}
+
+	return errors
 }
 
 // func MakeBucketPublic() error {
