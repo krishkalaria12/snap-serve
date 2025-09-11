@@ -6,8 +6,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/krishkalaria12/snap-serve/auth"
 	"github.com/krishkalaria12/snap-serve/database"
-	handler "github.com/krishkalaria12/snap-serve/handlers"
 	"github.com/krishkalaria12/snap-serve/models"
 	"github.com/krishkalaria12/snap-serve/router"
 )
@@ -25,12 +25,7 @@ func main() {
 	app.Use(cors.New())
 
 	// Initialize auth service
-	handler.SetupAuthService()
-
-	if err := handler.MakeBucketPublic(); err != nil {
-		log.Printf("Warning: Failed to make bucket public: %v", err)
-		// Don't fatal here, app can still work with signed URLs
-	}
+	auth.SetupAuthService()
 
 	// close the database connection
 	defer func() {

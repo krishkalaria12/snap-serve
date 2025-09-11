@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,11 +12,12 @@ import (
 	"time"
 
 	"cloud.google.com/go/storage"
-	"github.com/go-pkgz/auth/v2/token"
 	"github.com/gofiber/fiber/v2"
 	"github.com/krishkalaria12/snap-serve/config"
 	"github.com/krishkalaria12/snap-serve/database"
+	"github.com/krishkalaria12/snap-serve/middleware"
 	"github.com/krishkalaria12/snap-serve/models"
+	"gorm.io/gorm"
 )
 
 var projectId string = config.Config("GSC_PROJECT_ID")
@@ -64,16 +66,29 @@ func uploadImageToDB(url, filename string, userID uint) error {
 	return nil
 }
 
-func UploadImage(c *fiber.Ctx) error {
-	// get the userId in here
-	user := c.Locals("user").(token.User)
+func GetImageFromDB(url string) (models.Image, error) {
+	db := database.GetDB()
+	var image models.Image
 
-	userID, err := strconv.ParseUint(user.ID, 10, 32)
+	result := db.Where("original_url = ?", url).First(&image)
+
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return image, errors.New("image not found")
+		}
+
+		return image, result.Error
+	}
+
+	return image, nil
+}
+
+func UploadImage(c *fiber.Ctx) error {
+	userID, err := middleware.CheckUserLoggedIn(c)
 	if err != nil {
-		log.Printf("Failed to parse user ID: %s", user.ID)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"status":  "error",
-			"message": "Invalid user ID format",
+			"message": "Unauthorized Request",
 			"data":    nil,
 		})
 	}
@@ -106,7 +121,7 @@ func UploadImage(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := uploadImageToDB(url, originalFilename, uint(userID)); err != nil {
+	if err := uploadImageToDB(url, originalFilename, userID); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"status":  "error",
 			"message": "Error saving to database",
@@ -119,6 +134,33 @@ func UploadImage(c *fiber.Ctx) error {
 		"message": "Successfully uploaded the file",
 		"data":    url,
 	})
+}
+
+// Update your UploadFile method signature
+func (c *ClientUploader) UploadProcessedFile(file io.Reader, object string) (string, string, error) {
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, time.Second*50)
+	defer cancel()
+
+	// Better unique filename generation
+	timestamp := strconv.FormatInt(time.Now().UnixNano(), 10)
+	uniqueFilename := timestamp + "_" + object
+
+	// Full object path
+	objectPath := c.uploadPath + uniqueFilename
+
+	// Upload an object with storage.Writer.
+	wc := c.cl.Bucket(c.bucketName).Object(objectPath).NewWriter(ctx)
+	if _, err := io.Copy(wc, file); err != nil {
+		return "", "", fmt.Errorf("io.Copy: %v", err)
+	}
+	if err := wc.Close(); err != nil {
+		return "", "", fmt.Errorf("Writer.Close: %v", err)
+	}
+
+	// Generate the public URL
+	url := fmt.Sprintf("https://storage.googleapis.com/%s/%s", c.bucketName, objectPath)
+	return url, object, nil
 }
 
 // UploadFile uploads an object and returns the public URL
@@ -202,9 +244,9 @@ func (c *ClientUploader) MakeBucketPublic() error {
 	return nil
 }
 
-func MakeBucketPublic() error {
-	if uploader == nil {
-		return fmt.Errorf("uploader not initialized")
-	}
-	return uploader.MakeBucketPublic()
-}
+// func MakeBucketPublic() error {
+// 	if uploader == nil {
+// 		return fmt.Errorf("uploader not initialized")
+// 	}
+// 	return uploader.MakeBucketPublic()
+// }

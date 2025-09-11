@@ -1,8 +1,12 @@
 package middleware
 
 import (
+	"log"
+	"strconv"
+
+	"github.com/go-pkgz/auth/v2/token"
 	"github.com/gofiber/fiber/v2"
-	handler "github.com/krishkalaria12/snap-serve/handlers"
+	"github.com/krishkalaria12/snap-serve/auth"
 )
 
 func AuthMiddleware() fiber.Handler {
@@ -25,7 +29,7 @@ func AuthMiddleware() fiber.Handler {
 		}
 
 		// Validate token using go-pkgz/auth
-		claims, err := handler.GetAuthService().TokenService().Parse(tokenStr)
+		claims, err := auth.GetAuthService().TokenService().Parse(tokenStr)
 		if err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"message": "Invalid token",
@@ -40,4 +44,15 @@ func AuthMiddleware() fiber.Handler {
 
 		return c.Next()
 	}
+}
+
+func CheckUserLoggedIn(c *fiber.Ctx) (uint, error) {
+	user := c.Locals("user").(token.User)
+
+	userID, err := strconv.ParseUint(user.ID, 10, 32)
+	if err != nil {
+		log.Printf("Failed to parse user ID: %s", user.ID)
+	}
+
+	return uint(userID), err
 }
