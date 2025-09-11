@@ -24,4 +24,6 @@ func SetupRoutes(app *fiber.App) {
 
 	image := api.Group("/image")
 	image.Post("/upload", middleware.AuthMiddleware(), handler.UploadImage)
+	image.Post("/generate", middleware.AuthMiddleware(), handler.GenerateImage)
+	image.Post("/filter", middleware.AuthMiddleware(), handler.ApplyFilterToImage)
 }
